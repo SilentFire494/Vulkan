@@ -3,15 +3,6 @@
  */
 package voxels;
 
-import org.lwjgl.PointerBuffer;
-import org.lwjgl.system.MemoryStack;
-import org.lwjgl.vulkan.*;
-
-import java.nio.IntBuffer;
-import java.nio.LongBuffer;
-import java.util.HashSet;
-import java.util.Set;
-
 import static java.util.stream.Collectors.toSet;
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.glfw.GLFWVulkan.glfwGetRequiredInstanceExtensions;
@@ -22,165 +13,264 @@ import static org.lwjgl.system.MemoryUtil.NULL;
 import static org.lwjgl.vulkan.EXTDebugUtils.*;
 import static org.lwjgl.vulkan.VK10.*;
 
+import java.nio.IntBuffer;
+import java.nio.LongBuffer;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.stream.IntStream;
+import org.lwjgl.PointerBuffer;
+import org.lwjgl.system.MemoryStack;
+import org.lwjgl.vulkan.*;
+
 public class VoxelEngine {
 
-    private static class HelloTriangleApplication {
-            
-        private static final int WIDTH = 800;
-        private static final int HEIGHT = 600;
+  private static class HelloTriangleApplication {
 
-        private static final boolean ENABLE_VALIDATION_LAYERS = DEBUG.get(true);
+    private static final int WIDTH = 800;
+    private static final int HEIGHT = 600;
 
-        private static final Set<String> VALIDATION_LAYERS;
-        static {
-            if (ENABLE_VALIDATION_LAYERS) {
-                VALIDATION_LAYERS = new HashSet<>();
-                VALIDATION_LAYERS.add("VK_LAYER_KHRONOS_validation");
-            } else {
-                // We are not going to use it, so we don't create it
-                VALIDATION_LAYERS = null;
-            }
-        }
+    private static final boolean ENABLE_VALIDATION_LAYERS = DEBUG.get(true);
 
-        private static int debugCallBack(int messageSeverity, int messageType, long pCallbackData, long pUserData) {
-            VkDebugUtilsMessengerCallbackDataEXT callbackData = VkDebugUtilsMessengerCallbackDataEXT.create(pCallbackData);
-            System.err.println("Validation layer: " + callbackData.pMessageString());
-            return VK_FALSE;
-        }
+    private static final Set<String> VALIDATION_LAYERS;
 
-        private static int createDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerCreateInfoEXT createInfo, VkAllocationCallbacks allocationCallbacks, LongBuffer pDebugMessenger) {
-            if (vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT") != NULL) {
-                return vkCreateDebugUtilsMessengerEXT(instance, createInfo, allocationCallbacks, pDebugMessenger);
-            } else {
-                return VK_ERROR_EXTENSION_NOT_PRESENT;
-            }
-        }
-
-        private static void destoryDebugUtilsMessengerEXT(VkInstance instance, long debugMessenger, VkAllocationCallbacks allocationCallbacks) {
-            if (vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT") != NULL) {
-                vkDestroyDebugUtilsMessengerEXT(instance, debugMessenger, allocationCallbacks);
-            }
-        }
-
-        private long window;
-        private VkInstance instance;
-        private long debugMessenger;
-
-        public void run() {
-            initWindow();
-            initVulkan();
-            mainLoop();
-            cleanup();
-        }
-
-        private void initWindow() {
-            if (!glfwInit()) {
-                throw new RuntimeException("Failed to initialize GLFW");
-            }
-
-            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-            glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
-            String title = getClass().getEnclosingClass().getSimpleName();
-
-            window = glfwCreateWindow(WIDTH, HEIGHT, title, NULL, NULL);
-
-            if (window == NULL) {
-                throw new RuntimeException("Cannot Create Window");
-            }
-        }
-
-        private void initVulkan() {
-            createInstance();
-            setupDebugMessenger();
-        }
-
-        private void mainLoop() {
-            while (!glfwWindowShouldClose(window)) {
-                glfwPollEvents();
-            }
-        }
-
-        private void cleanup() {
-            if (ENABLE_VALIDATION_LAYERS) {
-                destoryDebugUtilsMessengerEXT(instance, debugMessenger, null);
-            }
-
-            vkDestroyInstance(instance, null);
-            glfwDestroyWindow(window);
-            glfwTerminate();
-        }
-
-        private void createInstance() {
-
-            if(ENABLE_VALIDATION_LAYERS && !checkValidationLayerSupport()) {
-                throw new RuntimeException("Validation requested but not supported");
-            }
-
-            try(MemoryStack stack = stackPush()) {
-
-                // Use calloc to initialize the structs with 0s. Otherwise, the program can crash due to random values
-
-                VkApplicationInfo appInfo = VkApplicationInfo.calloc(stack);
-
-                appInfo.sType(VK_STRUCTURE_TYPE_APPLICATION_INFO);
-                appInfo.pApplicationName(stack.UTF8Safe("Hello Triangle"));
-                appInfo.applicationVersion(VK_MAKE_VERSION(1, 0, 0));
-                appInfo.pEngineName(stack.UTF8Safe("No Engine"));
-                appInfo.engineVersion(VK_MAKE_VERSION(1, 0, 0));
-                appInfo.apiVersion(VK_API_VERSION_1_0);
-
-                VkInstanceCreateInfo createInfo = VkInstanceCreateInfo.calloc(stack);
-
-                createInfo.sType(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
-                createInfo.pApplicationInfo(appInfo);
-                // enabledExtensionCount is implicitly set when you call ppEnabledExtensionNames
-                createInfo.ppEnabledExtensionNames(getRequiredExtensions(stack));
-
-                if(ENABLE_VALIDATION_LAYERS) {
-
-                    createInfo.ppEnabledLayerNames(validationLayersAsPointerBuffer(stack));
-
-                    VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = VkDebugUtilsMessengerCreateInfoEXT.calloc(stack);
-                    populateDebugMessengerCreateInfo(debugCreateInfo);
-                    createInfo.pNext(debugCreateInfo.address());
-                }
-
-                // We need to retrieve the pointer of the created instance
-                PointerBuffer pInstance = stack.mallocPointer(1);
-
-                if(vkCreateInstance(createInfo, null, pInstance) != VK_SUCCESS) {
-                    throw new RuntimeException("Failed to create instance");
-                }
-
-                instance = new VkInstance(pInstance.get(0), createInfo);
-            }
-        }
-
-        private void populateDebugMessengerCreateInfo() {
-
-        }
-
-        private void setupDebugMessenger() {
-
-        }
-
-        private PointerBuffer validationLayerAsPointerBuffer() {
-
-        }
-
-        private PointerBuffer getRequiredExtension() {
-
-        }
-
-        private boolean checkValidationLayerSupport() {
-
-        }
-
-        
-
-        public static void main(String[] args) {
-            new HelloTriangleApplication().run();
-        }
+    static {
+      if (ENABLE_VALIDATION_LAYERS) {
+        VALIDATION_LAYERS = new HashSet<>();
+        VALIDATION_LAYERS.add("VK_LAYER_KHRONOS_validation");
+      } else {
+        // We are not going to use it, so we don't create it
+        VALIDATION_LAYERS = null;
+      }
     }
+
+    private static int debugCallBack(
+      int messageSeverity,
+      int messageType,
+      long pCallbackData,
+      long pUserData
+    ) {
+      VkDebugUtilsMessengerCallbackDataEXT callbackData = VkDebugUtilsMessengerCallbackDataEXT.create(
+        pCallbackData
+      );
+      System.err.println("Validation layer: " + callbackData.pMessageString());
+      return VK_FALSE;
+    }
+
+    private static int createDebugUtilsMessengerEXT(
+      VkInstance instance,
+      VkDebugUtilsMessengerCreateInfoEXT createInfo,
+      VkAllocationCallbacks allocationCallbacks,
+      LongBuffer pDebugMessenger
+    ) {
+      if (
+        vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT") !=
+        NULL
+      ) {
+        return vkCreateDebugUtilsMessengerEXT(
+          instance,
+          createInfo,
+          allocationCallbacks,
+          pDebugMessenger
+        );
+      } else {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+      }
+    }
+
+    private static void destoryDebugUtilsMessengerEXT(
+      VkInstance instance,
+      long debugMessenger,
+      VkAllocationCallbacks allocationCallbacks
+    ) {
+      if (
+        vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT") !=
+        NULL
+      ) {
+        vkDestroyDebugUtilsMessengerEXT(
+          instance,
+          debugMessenger,
+          allocationCallbacks
+        );
+      }
+    }
+
+    private long window;
+    private VkInstance instance;
+    private long debugMessenger;
+
+    public void run() {
+      initWindow();
+      initVulkan();
+      mainLoop();
+      cleanup();
+    }
+
+    private void initWindow() {
+      if (!glfwInit()) {
+        throw new RuntimeException("Failed to initialize GLFW");
+      }
+
+      glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+      glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+
+      String title = getClass().getEnclosingClass().getSimpleName();
+
+      window = glfwCreateWindow(WIDTH, HEIGHT, title, NULL, NULL);
+
+      if (window == NULL) {
+        throw new RuntimeException("Cannot Create Window");
+      }
+    }
+
+    private void initVulkan() {
+      createInstance();
+      setupDebugMessenger();
+    }
+
+    private void mainLoop() {
+      while (!glfwWindowShouldClose(window)) {
+        glfwPollEvents();
+      }
+    }
+
+    private void cleanup() {
+      if (ENABLE_VALIDATION_LAYERS) {
+        destoryDebugUtilsMessengerEXT(instance, debugMessenger, null);
+      }
+
+      vkDestroyInstance(instance, null);
+      glfwDestroyWindow(window);
+      glfwTerminate();
+    }
+
+    private void createInstance() {
+      if (ENABLE_VALIDATION_LAYERS && !checkValidationLayerSupport()) {
+        throw new RuntimeException("Validation requested but not supported");
+      }
+
+      try (MemoryStack stack = stackPush()) {
+        // Use calloc to initialize the structs with 0s. Otherwise, the program can crash due to random values
+
+        VkApplicationInfo appInfo = VkApplicationInfo.calloc(stack);
+
+        appInfo.sType(VK_STRUCTURE_TYPE_APPLICATION_INFO);
+        appInfo.pApplicationName(stack.UTF8Safe("Hello Triangle"));
+        appInfo.applicationVersion(VK_MAKE_VERSION(1, 0, 0));
+        appInfo.pEngineName(stack.UTF8Safe("No Engine"));
+        appInfo.engineVersion(VK_MAKE_VERSION(1, 0, 0));
+        appInfo.apiVersion(VK_API_VERSION_1_0);
+
+        VkInstanceCreateInfo createInfo = VkInstanceCreateInfo.calloc(stack);
+
+        createInfo.sType(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
+        createInfo.pApplicationInfo(appInfo);
+        // enabledExtensionCount is implicitly set when you call ppEnabledExtensionNames
+        createInfo.ppEnabledExtensionNames(getRequiredExtensions(stack));
+
+        if (ENABLE_VALIDATION_LAYERS) {
+          createInfo.ppEnabledLayerNames(validationLayersAsPointerBuffer(stack));
+
+          VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = VkDebugUtilsMessengerCreateInfoEXT.calloc(
+            stack
+          );
+          populateDebugMessengerCreateInfo(debugCreateInfo);
+          createInfo.pNext(debugCreateInfo.address());
+        }
+
+        // We need to retrieve the pointer of the created instance
+        PointerBuffer pInstance = stack.mallocPointer(1);
+
+        if (vkCreateInstance(createInfo, null, pInstance) != VK_SUCCESS) {
+          throw new RuntimeException("Failed to create instance");
+        }
+
+        instance = new VkInstance(pInstance.get(0), createInfo);
+      }
+    }
+
+    private void populateDebugMessengerCreateInfo(
+      VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo
+    ) {
+      debugCreateInfo.sType(
+        VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT
+      );
+      debugCreateInfo.messageSeverity(
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
+      );
+      debugCreateInfo.messageType(
+        VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT
+      );
+      debugCreateInfo.pfnUserCallback(HelloTriangleApplication::debugCallback);
+    }
+
+    private void setupDebugMessenger() {
+      if (!ENABLE_VALIDATION_LAYERS) {
+        return;
+      }
+
+      try (MemoryStack stack = stackPush()) {
+        VkDebugUtilsMessengerCreateInfoEXT createInfo = VkDebugUtilsMessengerCreateInfoEXT.calloc(stack);
+        populateDebugMessengerCreateInfo(createInfo);
+        LongBuffer pDebugMessenger = stack.longs(VK_NULL_HANDLE);
+        if (
+          createDebugUtilsMessengerEXT(
+            instance,
+            createInfo,
+            null,
+            pDebugMessenger
+          ) !=
+          VK_SUCCESS
+        ) {
+          throw new RuntimeException("Failed to set up debug messenger");
+        }
+        debugMessenger = pDebugMessenger.get(0);
+      }
+    }
+
+    private PointerBuffer validationLayerAsPointerBuffer() {
+      PointerBuffer buffer = stack.mallocPointer(VALIDATION_LAYERS.size());
+      VALIDATION_LAYERS.stream().map(stack::UTF8).forEach(buffer::put);
+      return buffer.rewind();
+    }
+
+    private PointerBuffer getRequiredExtension() {
+      PointerBuffer = glfwExtensions = glfwGetRequiredInstanceExtensions();
+      if (ENABLE_VALIDATION_LAYERS) {
+        PointerBuffer extensions = stack.mallocPointer(
+          glfwExtensions.capacity() + 1
+        );
+        extensions.put(glfwExtensions);
+        extensions.put(stack.UTF8(VK_EXT_DEBUG_UTILS_EXTENSION_NAME));
+
+        // Rewind the buffer before returning it to reset its position to 0
+        return extensions.rewind();
+      }
+      return glfwExtensions;
+    }
+
+    private boolean checkValidationLayerSupport() {
+      try (MemoryStack stack = stackPush()) {
+        IntBuffer layerCount = stack.ints(0);
+        vkEnumerateInstanceLayerProperties(layerCount, null);
+        VkLayerProperties.Buffer availableLayers = VkLayerProperties.malloc(
+          layerCount.get(0),
+          stack
+        );
+        vkEnumerateInstanceLayerProperties(layerCount, availableLayers);
+        Set<String> availableLayerNames = availableLayers
+          .stream()
+          .map(VkLayerProperties::layerNameString)
+          .collect(toSet());
+        return availableLayerNames.containsAll(VALIDATION_LAYERS);
+      }
+    }
+
+    public static void main(String[] args) {
+      new HelloTriangleApplication().run();
+    }
+  }
 }
