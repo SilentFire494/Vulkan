@@ -6,9 +6,9 @@ import org.lwjgl.vulkan.*;
 
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import static java.util.stream.Collectors.toSet;
 import static org.lwjgl.glfw.GLFW.*;
@@ -18,13 +18,15 @@ import static org.lwjgl.system.Configuration.DEBUG;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
 import static org.lwjgl.vulkan.EXTDebugUtils.*;
-import static org.lwjgl.vulkan.KHRSurface.vkDestroySurfaceKHR;
-import static org.lwjgl.vulkan.KHRSurface.vkGetPhysicalDeviceSurfaceSupportKHR;
+import static org.lwjgl.vulkan.KHRSurface.*;
+import static org.lwjgl.vulkan.KHRSwapchain.*;
 import static org.lwjgl.vulkan.VK10.*;
 
 public class VoxelEngine {
 
     private static class HelloTriangleApplication {
+
+        private static final int UINT32_MAX = 0xFFFFFFFF;
 
         private static final int WIDTH = 800;
         private static final int HEIGHT = 600;
@@ -41,6 +43,9 @@ public class VoxelEngine {
                 VALIDATION_LAYERS = null;
             }
         }
+
+        private static final Set<String> DEVICE_EXTENSIONS = Stream.of(VK_KHR_SWAPCHAIN_EXTENSION_NAME)
+                .collect(toSet());
 
         private static int debugCallback(int messageSeverity, int messageType, long pCallbackData, long pUserData) {
 
@@ -65,9 +70,11 @@ public class VoxelEngine {
 
         private static void destroyDebugUtilsMessengerEXT(VkInstance instance, long debugMessenger,
                 VkAllocationCallbacks allocationCallbacks) {
-            if (vkGetInstanceProcAddr(instance, "vkDestoryUtilsMessengerEXT") != NULL) {
+
+            if (vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT") != NULL) {
                 vkDestroyDebugUtilsMessengerEXT(instance, debugMessenger, allocationCallbacks);
             }
+
         }
 
         private class QueueFamilyIndices {
@@ -83,18 +90,39 @@ public class VoxelEngine {
             public int[] unique() {
                 return IntStream.of(graphicsFamily, presentFamily).distinct().toArray();
             }
+
+            public int[] array() {
+                return new int[] { graphicsFamily, presentFamily };
+            }
+        }
+
+        private class SwapChainSupportDetails {
+
+            private VkSurfaceCapabilitiesKHR capabilities;
+            private VkSurfaceFormatKHR.Buffer formats;
+            private IntBuffer presentModes;
+
         }
 
         // ======= FIELDS ======= //
 
         private long window;
+
         private VkInstance instance;
         private long debugMessenger;
         private long surface;
+
         private VkPhysicalDevice physicalDevice;
         private VkDevice device;
+
         private VkQueue graphicsQueue;
         private VkQueue presentQueue;
+
+        private long swapChain;
+        private List<Long> swapChainImages;
+        private List<Long> swapChainImageViews;
+        private int swapChainImageFormat;
+        private VkExtent2D swapChainExtent;
 
         // ======= METHODS ======= //
 
@@ -129,6 +157,7 @@ public class VoxelEngine {
             createSurface();
             pickPhysicalDevice();
             createLogicalDevice();
+            createSwapChain();
         }
 
         private void mainLoop() {
@@ -140,6 +169,8 @@ public class VoxelEngine {
         }
 
         private void cleanup() {
+
+            vkDestroySwapchainKHR(device, swapChain, null);
 
             vkDestroyDevice(device, null);
 
@@ -185,7 +216,7 @@ public class VoxelEngine {
 
                 if (ENABLE_VALIDATION_LAYERS) {
 
-                    createInfo.ppEnabledLayerNames(validationLayersAsPointerBuffer(stack));
+                    createInfo.ppEnabledLayerNames(asPointerBuffer(stack, VALIDATION_LAYERS));
 
                     VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = VkDebugUtilsMessengerCreateInfoEXT
                             .calloc(stack);
@@ -236,12 +267,16 @@ public class VoxelEngine {
         }
 
         private void createSurface() {
+
             try (MemoryStack stack = stackPush()) {
+
                 LongBuffer pSurface = stack.longs(VK_NULL_HANDLE);
 
                 if (glfwCreateWindowSurface(instance, window, null, pSurface) != VK_SUCCESS) {
-                    surface = pSurface.get(0);
+                    throw new RuntimeException("Failed to create window surface");
                 }
+
+                surface = pSurface.get(0);
             }
         }
 
@@ -292,7 +327,9 @@ public class VoxelEngine {
                     queueCreateInfo.queueFamilyIndex(uniqueQueueFamilies[i]);
                     queueCreateInfo.pQueuePriorities(stack.floats(1.0f));
                 }
+
                 VkPhysicalDeviceFeatures deviceFeatures = VkPhysicalDeviceFeatures.calloc(stack);
+
                 VkDeviceCreateInfo createInfo = VkDeviceCreateInfo.calloc(stack);
 
                 createInfo.sType(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
@@ -301,8 +338,10 @@ public class VoxelEngine {
 
                 createInfo.pEnabledFeatures(deviceFeatures);
 
+                createInfo.ppEnabledExtensionNames(asPointerBuffer(stack, DEVICE_EXTENSIONS));
+
                 if (ENABLE_VALIDATION_LAYERS) {
-                    createInfo.ppEnabledLayerNames(validationLayersAsPointerBuffer(stack));
+                    createInfo.ppEnabledLayerNames(asPointerBuffer(stack, VALIDATION_LAYERS));
                 }
 
                 PointerBuffer pDevice = stack.pointers(VK_NULL_HANDLE);
@@ -314,6 +353,7 @@ public class VoxelEngine {
                 device = new VkDevice(pDevice.get(0), physicalDevice, createInfo);
 
                 PointerBuffer pQueue = stack.pointers(VK_NULL_HANDLE);
+
                 vkGetDeviceQueue(device, indices.graphicsFamily, 0, pQueue);
                 graphicsQueue = new VkQueue(pQueue.get(0), device);
 
@@ -322,11 +362,179 @@ public class VoxelEngine {
             }
         }
 
+        private void createSwapChain() {
+
+            try (MemoryStack stack = stackPush()) {
+
+                SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice, stack);
+
+                VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
+                int presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
+                VkExtent2D extent = chooseSwapExtent(stack, swapChainSupport.capabilities);
+
+                IntBuffer imageCount = stack.ints(swapChainSupport.capabilities.minImageCount() + 1);
+
+                if (swapChainSupport.capabilities.maxImageCount() > 0
+                        && imageCount.get(0) > swapChainSupport.capabilities.maxImageCount()) {
+                    imageCount.put(0, swapChainSupport.capabilities.maxImageCount());
+                }
+
+                VkSwapchainCreateInfoKHR createInfo = VkSwapchainCreateInfoKHR.calloc(stack);
+
+                createInfo.sType(VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
+                createInfo.surface(surface);
+
+                // Image settings
+                createInfo.minImageCount(imageCount.get(0));
+                createInfo.imageFormat(surfaceFormat.format());
+                createInfo.imageColorSpace(surfaceFormat.colorSpace());
+                createInfo.imageExtent(extent);
+                createInfo.imageArrayLayers(1);
+                createInfo.imageUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+
+                QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
+
+                if (!indices.graphicsFamily.equals(indices.presentFamily)) {
+                    createInfo.imageSharingMode(VK_SHARING_MODE_CONCURRENT);
+                    createInfo.pQueueFamilyIndices(stack.ints(indices.graphicsFamily, indices.presentFamily));
+                } else {
+                    createInfo.imageSharingMode(VK_SHARING_MODE_EXCLUSIVE);
+                }
+
+                createInfo.preTransform(swapChainSupport.capabilities.currentTransform());
+                createInfo.compositeAlpha(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
+                createInfo.presentMode(presentMode);
+                createInfo.clipped(true);
+
+                createInfo.oldSwapchain(VK_NULL_HANDLE);
+
+                LongBuffer pSwapChain = stack.longs(VK_NULL_HANDLE);
+
+                if (vkCreateSwapchainKHR(device, createInfo, null, pSwapChain) != VK_SUCCESS) {
+                    throw new RuntimeException("Failed to create swap chain");
+                }
+
+                swapChain = pSwapChain.get(0);
+
+                vkGetSwapchainImagesKHR(device, swapChain, imageCount, null);
+
+                LongBuffer pSwapchainImages = stack.mallocLong(imageCount.get(0));
+
+                vkGetSwapchainImagesKHR(device, swapChain, imageCount, pSwapchainImages);
+
+                swapChainImages = new ArrayList<>(imageCount.get(0));
+
+                for (int i = 0; i < pSwapchainImages.capacity(); i++) {
+                    swapChainImages.add(pSwapchainImages.get(i));
+                }
+
+                swapChainImageFormat = surfaceFormat.format();
+                swapChainExtent = VkExtent2D.create().set(extent);
+            }
+        }
+
+        private VkSurfaceFormatKHR chooseSwapSurfaceFormat(VkSurfaceFormatKHR.Buffer availableFormats) {
+            return availableFormats.stream()
+                    .filter(availableFormat -> availableFormat.format() == VK_FORMAT_B8G8R8_UNORM)
+                    .filter(availableFormat -> availableFormat.colorSpace() == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+                    .findAny()
+                    .orElse(availableFormats.get(0));
+        }
+
+        private int chooseSwapPresentMode(IntBuffer availablePresentModes) {
+
+            for (int i = 0; i < availablePresentModes.capacity(); i++) {
+                if (availablePresentModes.get(i) == VK_PRESENT_MODE_MAILBOX_KHR) {
+                    return availablePresentModes.get(i);
+                }
+            }
+
+            return VK_PRESENT_MODE_FIFO_KHR;
+        }
+
+        private VkExtent2D chooseSwapExtent(MemoryStack stack, VkSurfaceCapabilitiesKHR capabilities) {
+
+            if (capabilities.currentExtent().width() != UINT32_MAX) {
+                return capabilities.currentExtent();
+            }
+
+            VkExtent2D actualExtent = VkExtent2D.malloc(stack).set(WIDTH, HEIGHT);
+
+            VkExtent2D minExtent = capabilities.minImageExtent();
+            VkExtent2D maxExtent = capabilities.maxImageExtent();
+
+            actualExtent.width(clamp(minExtent.width(), maxExtent.width(), actualExtent.width()));
+            actualExtent.height(clamp(minExtent.height(), maxExtent.height(), actualExtent.height()));
+
+            return actualExtent;
+        }
+
+        private int clamp(int min, int max, int value) {
+            return Math.max(min, Math.min(max, value));
+        }
+
         private boolean isDeviceSuitable(VkPhysicalDevice device) {
 
             QueueFamilyIndices indices = findQueueFamilies(device);
 
-            return indices.isComplete();
+            boolean extensionsSupported = checkDeviceExtensionSupport(device);
+            boolean swapChainAdequate = false;
+
+            if (extensionsSupported) {
+                try (MemoryStack stack = stackPush()) {
+                    SwapChainSupportDetails swapChainSupport = querySwapChainSupport(device, stack);
+                    swapChainAdequate = swapChainSupport.formats.hasRemaining()
+                            && swapChainSupport.presentModes.hasRemaining();
+                }
+            }
+
+            return indices.isComplete() && extensionsSupported && swapChainAdequate;
+        }
+
+        private boolean checkDeviceExtensionSupport(VkPhysicalDevice device) {
+
+            try (MemoryStack stack = stackPush()) {
+
+                IntBuffer extensionCount = stack.ints(0);
+
+                vkEnumerateDeviceExtensionProperties(device, (String) null, extensionCount, null);
+
+                VkExtensionProperties.Buffer availableExtensions = VkExtensionProperties.malloc(extensionCount.get(0),
+                        stack);
+
+                vkEnumerateDeviceExtensionProperties(device, (String) null, extensionCount, availableExtensions);
+
+                return availableExtensions.stream()
+                        .map(VkExtensionProperties::extensionNameString)
+                        .collect(toSet())
+                        .containsAll(DEVICE_EXTENSIONS);
+            }
+        }
+
+        private SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, MemoryStack stack) {
+
+            SwapChainSupportDetails details = new SwapChainSupportDetails();
+
+            details.capabilities = VkSurfaceCapabilitiesKHR.malloc(stack);
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, details.capabilities);
+
+            IntBuffer count = stack.ints(0);
+
+            vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, count, null);
+
+            if (count.get(0) != 0) {
+                details.formats = VkSurfaceFormatKHR.malloc(count.get(0), stack);
+                vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, count, details.formats);
+            }
+
+            vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, count, null);
+
+            if (count.get(0) != 0) {
+                details.presentModes = stack.mallocInt(count.get(0));
+                vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, count, details.presentModes);
+            }
+
+            return details;
         }
 
         private QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
@@ -347,6 +555,7 @@ public class VoxelEngine {
                 IntBuffer presentSupport = stack.ints(VK_FALSE);
 
                 for (int i = 0; i < queueFamilies.capacity() || !indices.isComplete(); i++) {
+
                     if ((queueFamilies.get(i).queueFlags() & VK_QUEUE_GRAPHICS_BIT) != 0) {
                         indices.graphicsFamily = i;
                     }
@@ -357,15 +566,16 @@ public class VoxelEngine {
                         indices.presentFamily = i;
                     }
                 }
+
                 return indices;
             }
         }
 
-        private PointerBuffer validationLayersAsPointerBuffer(MemoryStack stack) {
+        private PointerBuffer asPointerBuffer(MemoryStack stack, Collection<String> collection) {
 
-            PointerBuffer buffer = stack.mallocPointer(VALIDATION_LAYERS.size());
+            PointerBuffer buffer = stack.mallocPointer(collection.size());
 
-            VALIDATION_LAYERS.stream()
+            collection.stream()
                     .map(stack::UTF8)
                     .forEach(buffer::put);
 
