@@ -120,7 +120,7 @@ public class VoxelEngine {
 
         private long swapChain;
         private List<Long> swapChainImages;
-        private List<Long> swapChainImageViews;
+        private List<Long> swapChainImageViews;A
         private int swapChainImageFormat;
         private VkExtent2D swapChainExtent;
 
@@ -158,6 +158,7 @@ public class VoxelEngine {
             pickPhysicalDevice();
             createLogicalDevice();
             createSwapChain();
+            createImageViews();
         }
 
         private void mainLoop() {
