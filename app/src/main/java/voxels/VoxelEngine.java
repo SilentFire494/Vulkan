@@ -4,6 +4,8 @@ import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 
+import VulkanEngine.*;
+
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
 import java.util.*;
@@ -77,33 +79,6 @@ public class VoxelEngine {
 
         }
 
-        private class QueueFamilyIndices {
-
-            // We use Integer to use null as the empty value
-            private Integer graphicsFamily;
-            private Integer presentFamily;
-
-            private boolean isComplete() {
-                return graphicsFamily != null && presentFamily != null;
-            }
-
-            public int[] unique() {
-                return IntStream.of(graphicsFamily, presentFamily).distinct().toArray();
-            }
-
-            public int[] array() {
-                return new int[] { graphicsFamily, presentFamily };
-            }
-        }
-
-        private class SwapChainSupportDetails {
-
-            private VkSurfaceCapabilitiesKHR capabilities;
-            private VkSurfaceFormatKHR.Buffer formats;
-            private IntBuffer presentModes;
-
-        }
-
         // ======= FIELDS ======= //
 
         private long window;
@@ -120,7 +95,7 @@ public class VoxelEngine {
 
         private long swapChain;
         private List<Long> swapChainImages;
-        private List<Long> swapChainImageViews;A
+        private List<Long> swapChainImageViews;
         private int swapChainImageFormat;
         private VkExtent2D swapChainExtent;
 
@@ -364,20 +339,17 @@ public class VoxelEngine {
         }
 
         private void createSwapChain() {
-
             try (MemoryStack stack = stackPush()) {
+                SwapChainSupportDetails swapChainSupportDetails = querySwapChainSupport(physicalDevice, stack);
+                VkSurfaceFormatKHR surfaceFormatKHR = chooseSwapSurfaceFormat(swapChainSupportDetails.formats);
+                int presentMode = chooseSwapPresentMode(swapChainSupportDetails.presentModes);
+                VkExtent2D extent2d = chooseSwapExtent(stack, swapChainSupportDetails.capabilities);
 
-                SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice, stack);
+                IntBuffer imageCount = stack.ints(swapChainSupportDetails.capabilities.minImageCount() + 1);
 
-                VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
-                int presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
-                VkExtent2D extent = chooseSwapExtent(stack, swapChainSupport.capabilities);
-
-                IntBuffer imageCount = stack.ints(swapChainSupport.capabilities.minImageCount() + 1);
-
-                if (swapChainSupport.capabilities.maxImageCount() > 0
-                        && imageCount.get(0) > swapChainSupport.capabilities.maxImageCount()) {
-                    imageCount.put(0, swapChainSupport.capabilities.maxImageCount());
+                if (swapChainSupportDetails.capabilities.maxImageCount() > 0
+                        && imageCount.get(0) > swapChainSupportDetails.capabilities.maxImageCount()) {
+                    imageCount.put(0, swapChainSupportDetails.capabilities.maxImageCount());
                 }
 
                 VkSwapchainCreateInfoKHR createInfo = VkSwapchainCreateInfoKHR.calloc(stack);
@@ -385,11 +357,10 @@ public class VoxelEngine {
                 createInfo.sType(VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
                 createInfo.surface(surface);
 
-                // Image settings
                 createInfo.minImageCount(imageCount.get(0));
-                createInfo.imageFormat(surfaceFormat.format());
-                createInfo.imageColorSpace(surfaceFormat.colorSpace());
-                createInfo.imageExtent(extent);
+                createInfo.imageFormat(surfaceFormatKHR.format());
+                createInfo.imageColorSpace(surfaceFormatKHR.colorSpace());
+                createInfo.imageExtent(extent2d);
                 createInfo.imageArrayLayers(1);
                 createInfo.imageUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 
@@ -399,38 +370,62 @@ public class VoxelEngine {
                     createInfo.imageSharingMode(VK_SHARING_MODE_CONCURRENT);
                     createInfo.pQueueFamilyIndices(stack.ints(indices.graphicsFamily, indices.presentFamily));
                 } else {
-                    createInfo.imageSharingMode(VK_SHARING_MODE_EXCLUSIVE);
+                    createInfo.imageSharingMode(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
+                    createInfo.compositeAlpha(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
+                    createInfo.presentMode(presentMode);
+                    createInfo.clipped(true);
+
+                    createInfo.oldSwapchain(VK_NULL_HANDLE);
+
+                    LongBuffer pSwapChain = stack.longs(VK_NULL_HANDLE);
+
+                    if (vkCreateSwapchainKHR(device, createInfo, null, pSwapChain) != VK_SUCCESS) {
+                        throw new RuntimeException("Failed to create swap chain");
+                    }
+                    swapChain = pSwapChain.get(0);
+
+                    vkGetSwapchainImagesKHR(device, swapChain, imageCount, null);
+
+                    LongBuffer pSwapChainImages = stack.mallocLong(imageCount.get(0));
+
+                    for (int i = 0; i < pSwapChainImages.capacity(); i++) {
+                        swapChainImages.add(pSwapChainImages.get(0));
+                    }
+
+                    swapChainImageFormat = surfaceFormatKHR.format();
+                    swapChainExtent = VkExtent2D.create().set(extent2d);
                 }
+            }
+        }
 
-                createInfo.preTransform(swapChainSupport.capabilities.currentTransform());
-                createInfo.compositeAlpha(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
-                createInfo.presentMode(presentMode);
-                createInfo.clipped(true);
+        private void createImageViews() {
+            swapChainImageViews = new ArrayList<>(swapChainImages.size());
+            try (MemoryStack stack = stackPush()) {
+                LongBuffer pImageView = stack.mallocLong(1);
 
-                createInfo.oldSwapchain(VK_NULL_HANDLE);
+                for (long swapChainImage : swapChainImages) {
+                    VkImageViewCreateInfo createInfo = VkImageViewCreateInfo.calloc(stack);
 
-                LongBuffer pSwapChain = stack.longs(VK_NULL_HANDLE);
+                    createInfo.sType(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+                    createInfo.image(swapChainImage);
+                    createInfo.viewType(VK_IMAGE_VIEW_TYPE_2D);
+                    createInfo.format(swapChainImageFormat);
 
-                if (vkCreateSwapchainKHR(device, createInfo, null, pSwapChain) != VK_SUCCESS) {
-                    throw new RuntimeException("Failed to create swap chain");
+                    createInfo.components().r(VK_COMPONENT_SWIZZLE_IDENTITY);
+                    createInfo.components().g(VK_COMPONENT_SWIZZLE_IDENTITY);
+                    createInfo.components().b(VK_COMPONENT_SWIZZLE_IDENTITY);
+                    createInfo.components().a(VK_COMPONENT_SWIZZLE_IDENTITY;
+                    
+                    createInfo.subresourceRange().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT));
+                    createInfo.subresourceRange().baseMipLevel(0);
+                    createInfo.subresourceRange().levelCount(1);
+                    createInfo.subresourceRange().baseArrayLayer(0);
+                    createInfo.subresourceRange().layerCount(1);
+
+                    if (vkCreateImageView(device, createInfo, null, pImageView) != VK_SUCCESS) {
+                        throw new RuntimeException("Failed to create image views")
+;                    }
                 }
-
-                swapChain = pSwapChain.get(0);
-
-                vkGetSwapchainImagesKHR(device, swapChain, imageCount, null);
-
-                LongBuffer pSwapchainImages = stack.mallocLong(imageCount.get(0));
-
-                vkGetSwapchainImagesKHR(device, swapChain, imageCount, pSwapchainImages);
-
-                swapChainImages = new ArrayList<>(imageCount.get(0));
-
-                for (int i = 0; i < pSwapchainImages.capacity(); i++) {
-                    swapChainImages.add(pSwapchainImages.get(i));
-                }
-
-                swapChainImageFormat = surfaceFormat.format();
-                swapChainExtent = VkExtent2D.create().set(extent);
             }
         }
 
