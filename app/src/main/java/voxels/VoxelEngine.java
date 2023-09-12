@@ -1,8 +1,8 @@
 package voxels;
 
 import VulkanEngine.*;
-import static VulkanEngine.ShaderKind.*;
 import static VulkanEngine.ShaderSPIRVUtils.*;
+import static VulkanEngine.ShaderKind.*;
 
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
@@ -12,7 +12,6 @@ import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
 import java.util.*;
-import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static java.util.stream.Collectors.toSet;
@@ -20,14 +19,12 @@ import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.glfw.GLFWVulkan.glfwCreateWindowSurface;
 import static org.lwjgl.glfw.GLFWVulkan.glfwGetRequiredInstanceExtensions;
 import static org.lwjgl.system.Configuration.DEBUG;
-import static org.lwjgl.system.MemoryStack.stackGet;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
 import static org.lwjgl.vulkan.EXTDebugUtils.*;
 import static org.lwjgl.vulkan.KHRSurface.*;
 import static org.lwjgl.vulkan.KHRSwapchain.*;
 import static org.lwjgl.vulkan.VK10.*;
-import VulkanEngine.SwapChainSupportDetails;
 
 public class VoxelEngine {
 
@@ -103,7 +100,9 @@ public class VoxelEngine {
         private List<Long> swapChainImageViews;
         private int swapChainImageFormat;
         private VkExtent2D swapChainExtent;
-        private long pipeLineLayout;
+
+        private long renderPass;
+        private long pipelineLayout;
 
         // ======= METHODS ======= //
 
@@ -140,6 +139,7 @@ public class VoxelEngine {
             createLogicalDevice();
             createSwapChain();
             createImageViews();
+            createRenderPass();
             createGraphicsPipeline();
         }
 
@@ -152,6 +152,12 @@ public class VoxelEngine {
         }
 
         private void cleanup() {
+
+            vkDestroyPipelineLayout(device, pipelineLayout, null);
+
+            vkDestroyRenderPass(device, renderPass, null);
+
+            swapChainImageViews.forEach(imageView -> vkDestroyImageView(device, imageView, null));
 
             vkDestroySwapchainKHR(device, swapChain, null);
 
@@ -346,17 +352,20 @@ public class VoxelEngine {
         }
 
         private void createSwapChain() {
+
             try (MemoryStack stack = stackPush()) {
-                SwapChainSupportDetails swapChainSupportDetails = querySwapChainSupport(physicalDevice, stack);
-                VkSurfaceFormatKHR surfaceFormatKHR = chooseSwapSurfaceFormat(swapChainSupportDetails.formats);
-                int presentMode = chooseSwapPresentMode(swapChainSupportDetails.presentModes);
-                VkExtent2D extent2d = chooseSwapExtent(stack, swapChainSupportDetails.capabilities);
 
-                IntBuffer imageCount = stack.ints(swapChainSupportDetails.capabilities.minImageCount() + 1);
+                SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice, stack);
 
-                if (swapChainSupportDetails.capabilities.maxImageCount() > 0
-                        && imageCount.get(0) > swapChainSupportDetails.capabilities.maxImageCount()) {
-                    imageCount.put(0, swapChainSupportDetails.capabilities.maxImageCount());
+                VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
+                int presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
+                VkExtent2D extent = chooseSwapExtent(stack, swapChainSupport.capabilities);
+
+                IntBuffer imageCount = stack.ints(swapChainSupport.capabilities.minImageCount() + 1);
+
+                if (swapChainSupport.capabilities.maxImageCount() > 0
+                        && imageCount.get(0) > swapChainSupport.capabilities.maxImageCount()) {
+                    imageCount.put(0, swapChainSupport.capabilities.maxImageCount());
                 }
 
                 VkSwapchainCreateInfoKHR createInfo = VkSwapchainCreateInfoKHR.calloc(stack);
@@ -364,10 +373,11 @@ public class VoxelEngine {
                 createInfo.sType(VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
                 createInfo.surface(surface);
 
+                // Image settings
                 createInfo.minImageCount(imageCount.get(0));
-                createInfo.imageFormat(surfaceFormatKHR.format());
-                createInfo.imageColorSpace(surfaceFormatKHR.colorSpace());
-                createInfo.imageExtent(extent2d);
+                createInfo.imageFormat(surfaceFormat.format());
+                createInfo.imageColorSpace(surfaceFormat.colorSpace());
+                createInfo.imageExtent(extent);
                 createInfo.imageArrayLayers(1);
                 createInfo.imageUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 
@@ -377,43 +387,54 @@ public class VoxelEngine {
                     createInfo.imageSharingMode(VK_SHARING_MODE_CONCURRENT);
                     createInfo.pQueueFamilyIndices(stack.ints(indices.graphicsFamily, indices.presentFamily));
                 } else {
-                    createInfo.imageSharingMode(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
-                    createInfo.compositeAlpha(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
-                    createInfo.presentMode(presentMode);
-                    createInfo.clipped(true);
-
-                    createInfo.oldSwapchain(VK_NULL_HANDLE);
-
-                    LongBuffer pSwapChain = stack.longs(VK_NULL_HANDLE);
-
-                    if (vkCreateSwapchainKHR(device, createInfo, null, pSwapChain) != VK_SUCCESS) {
-                        throw new RuntimeException("Failed to create swap chain");
-                    }
-                    swapChain = pSwapChain.get(0);
-
-                    vkGetSwapchainImagesKHR(device, swapChain, imageCount, null);
-
-                    LongBuffer pSwapChainImages = stack.mallocLong(imageCount.get(0));
-
-                    for (int i = 0; i < pSwapChainImages.capacity(); i++) {
-                        swapChainImages.add(pSwapChainImages.get(0));
-                    }
-
-                    swapChainImageFormat = surfaceFormatKHR.format();
-                    swapChainExtent = VkExtent2D.create().set(extent2d);
+                    createInfo.imageSharingMode(VK_SHARING_MODE_EXCLUSIVE);
                 }
+
+                createInfo.preTransform(swapChainSupport.capabilities.currentTransform());
+                createInfo.compositeAlpha(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
+                createInfo.presentMode(presentMode);
+                createInfo.clipped(true);
+
+                createInfo.oldSwapchain(VK_NULL_HANDLE);
+
+                LongBuffer pSwapChain = stack.longs(VK_NULL_HANDLE);
+
+                if (vkCreateSwapchainKHR(device, createInfo, null, pSwapChain) != VK_SUCCESS) {
+                    throw new RuntimeException("Failed to create swap chain");
+                }
+
+                swapChain = pSwapChain.get(0);
+
+                vkGetSwapchainImagesKHR(device, swapChain, imageCount, null);
+
+                LongBuffer pSwapchainImages = stack.mallocLong(imageCount.get(0));
+
+                vkGetSwapchainImagesKHR(device, swapChain, imageCount, pSwapchainImages);
+
+                swapChainImages = new ArrayList<>(imageCount.get(0));
+
+                for (int i = 0; i < pSwapchainImages.capacity(); i++) {
+                    swapChainImages.add(pSwapchainImages.get(i));
+                }
+
+                swapChainImageFormat = surfaceFormat.format();
+                swapChainExtent = VkExtent2D.create().set(extent);
             }
         }
 
         private void createImageViews() {
+
             swapChainImageViews = new ArrayList<>(swapChainImages.size());
+
             try (MemoryStack stack = stackPush()) {
+
                 LongBuffer pImageView = stack.mallocLong(1);
 
                 for (long swapChainImage : swapChainImages) {
+
                     VkImageViewCreateInfo createInfo = VkImageViewCreateInfo.calloc(stack);
 
-                    createInfo.sType(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+                    createInfo.sType(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
                     createInfo.image(swapChainImage);
                     createInfo.viewType(VK_IMAGE_VIEW_TYPE_2D);
                     createInfo.format(swapChainImageFormat);
@@ -435,15 +456,54 @@ public class VoxelEngine {
 
                     swapChainImageViews.add(pImageView.get(0));
                 }
+
+            }
+        }
+
+        private void createRenderPass() {
+            try (MemoryStack stack = stackPush()) {
+                VkAttachmentDescription.Buffer colorAttachment = VkAttachmentDescription.calloc(1, stack);
+                colorAttachment.format(swapChainImageFormat);
+                colorAttachment.samples(VK_SAMPLE_COUNT_1_BIT);
+                colorAttachment.loadOp(VK_ATTACHMENT_LOAD_OP_CLEAR);
+                colorAttachment.storeOp(VK_ATTACHMENT_STORE_OP_STORE);
+                colorAttachment.stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+                colorAttachment.stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE);
+                colorAttachment.initialLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+                colorAttachment.finalLayout(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+                VkAttachmentReference.Buffer colorAttachmentRef = VkAttachmentReference.calloc(1, stack);
+                colorAttachmentRef.attachment(0);
+                colorAttachmentRef.layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+                VkSubpassDescription.Buffer subpass = VkSubpassDescription.calloc(1, stack);
+                subpass.pipelineBindPoint(VK_PIPELINE_BIND_POINT_GRAPHICS);
+                subpass.colorAttachmentCount(1);
+                subpass.pColorAttachments(colorAttachmentRef);
+
+                VkRenderPassCreateInfo renderPassInfo = VkRenderPassCreateInfo.calloc(stack);
+                renderPassInfo.sType(VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO);
+                renderPassInfo.pAttachments(colorAttachment);
+                renderPassInfo.pSubpasses(subpass);
+
+                LongBuffer pRenderPass = stack.longs(1);
+
+                if (vkCreateRenderPass(device, renderPassInfo, null, pRenderPass) != VK_SUCCESS) {
+                    throw new RuntimeException("Failed to create render pass");
+                }
+                renderPass = pRenderPass.get(0);
             }
         }
 
         private void createGraphicsPipeline() {
+
             try (MemoryStack stack = stackPush()) {
-                // Lets Complie the GLSL shaders into SPIR-V at runtime using shaderc libary
+
+                // Let's compile the GLSL shaders into SPIR-V at runtime using the shaderc
+                // library
                 // Check ShaderSPIRVUtils class to see how it can be done
-                SPIRV vertShaderSPIRV = compileShaderFile("shaders/shader_base.vert", VERTEX_SHADER);
-                SPIRV fragShaderSPIRV = compileShaderFile("shaders/shader_base.frag", FRAGMENT_SHADER);
+                SPIRV vertShaderSPIRV = compileShaderFile("shaders/09_shader_base.vert", VERTEX_SHADER);
+                SPIRV fragShaderSPIRV = compileShaderFile("shaders/09_shader_base.frag", FRAGMENT_SHADER);
 
                 long vertShaderModule = createShaderModule(vertShaderSPIRV.bytecode());
                 long fragShaderModule = createShaderModule(fragShaderSPIRV.bytecode());
@@ -466,6 +526,89 @@ public class VoxelEngine {
                 fragShaderStageInfo.module(fragShaderModule);
                 fragShaderStageInfo.pName(entryPoint);
 
+                // ===> VERTEX STAGE <===
+
+                VkPipelineVertexInputStateCreateInfo vertexInputInfo = VkPipelineVertexInputStateCreateInfo
+                        .calloc(stack);
+                vertexInputInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
+
+                // ===> ASSEMBLY STAGE <===
+
+                VkPipelineInputAssemblyStateCreateInfo inputAssembly = VkPipelineInputAssemblyStateCreateInfo
+                        .calloc(stack);
+                inputAssembly.sType(VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO);
+                inputAssembly.topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+                inputAssembly.primitiveRestartEnable(false);
+
+                // ===> VIEWPORT & SCISSOR
+
+                VkViewport.Buffer viewport = VkViewport.calloc(1, stack);
+                viewport.x(0.0f);
+                viewport.y(0.0f);
+                viewport.width(swapChainExtent.width());
+                viewport.height(swapChainExtent.height());
+                viewport.minDepth(0.0f);
+                viewport.maxDepth(1.0f);
+
+                VkRect2D.Buffer scissor = VkRect2D.calloc(1, stack);
+                scissor.offset(VkOffset2D.calloc(stack).set(0, 0));
+                scissor.extent(swapChainExtent);
+
+                VkPipelineViewportStateCreateInfo viewportState = VkPipelineViewportStateCreateInfo.calloc(stack);
+                viewportState.sType(VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO);
+                viewportState.pViewports(viewport);
+                viewportState.pScissors(scissor);
+
+                // ===> RASTERIZATION STAGE <===
+
+                VkPipelineRasterizationStateCreateInfo rasterizer = VkPipelineRasterizationStateCreateInfo
+                        .calloc(stack);
+                rasterizer.sType(VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO);
+                rasterizer.depthClampEnable(false);
+                rasterizer.rasterizerDiscardEnable(false);
+                rasterizer.polygonMode(VK_POLYGON_MODE_FILL);
+                rasterizer.lineWidth(1.0f);
+                rasterizer.cullMode(VK_CULL_MODE_BACK_BIT);
+                rasterizer.frontFace(VK_FRONT_FACE_CLOCKWISE);
+                rasterizer.depthBiasEnable(false);
+
+                // ===> MULTISAMPLING <===
+
+                VkPipelineMultisampleStateCreateInfo multisampling = VkPipelineMultisampleStateCreateInfo.calloc(stack);
+                multisampling.sType(VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO);
+                multisampling.sampleShadingEnable(false);
+                multisampling.rasterizationSamples(VK_SAMPLE_COUNT_1_BIT);
+
+                // ===> COLOR BLENDING <===
+
+                VkPipelineColorBlendAttachmentState.Buffer colorBlendAttachment = VkPipelineColorBlendAttachmentState
+                        .calloc(1, stack);
+                colorBlendAttachment.colorWriteMask(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+                        | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+                colorBlendAttachment.blendEnable(false);
+
+                VkPipelineColorBlendStateCreateInfo colorBlending = VkPipelineColorBlendStateCreateInfo.calloc(stack);
+                colorBlending.sType(VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
+                colorBlending.logicOpEnable(false);
+                colorBlending.logicOp(VK_LOGIC_OP_COPY);
+                colorBlending.pAttachments(colorBlendAttachment);
+                colorBlending.blendConstants(stack.floats(0.0f, 0.0f, 0.0f, 0.0f));
+
+                // ===> PIPELINE LAYOUT CREATION <===
+
+                VkPipelineLayoutCreateInfo pipelineLayoutInfo = VkPipelineLayoutCreateInfo.calloc(stack);
+                pipelineLayoutInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
+
+                LongBuffer pPipelineLayout = stack.longs(VK_NULL_HANDLE);
+
+                if (vkCreatePipelineLayout(device, pipelineLayoutInfo, null, pPipelineLayout) != VK_SUCCESS) {
+                    throw new RuntimeException("Failed to create pipeline layout");
+                }
+
+                pipelineLayout = pPipelineLayout.get(0);
+
+                // ===> RELEASE RESOURCES <===
+
                 vkDestroyShaderModule(device, vertShaderModule, null);
                 vkDestroyShaderModule(device, fragShaderModule, null);
 
@@ -475,8 +618,11 @@ public class VoxelEngine {
         }
 
         private long createShaderModule(ByteBuffer spirvCode) {
+
             try (MemoryStack stack = stackPush()) {
+
                 VkShaderModuleCreateInfo createInfo = VkShaderModuleCreateInfo.calloc(stack);
+
                 createInfo.sType(VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
                 createInfo.pCode(spirvCode);
 
@@ -485,6 +631,7 @@ public class VoxelEngine {
                 if (vkCreateShaderModule(device, createInfo, null, pShaderModule) != VK_SUCCESS) {
                     throw new RuntimeException("Failed to create shader module");
                 }
+
                 return pShaderModule.get(0);
             }
         }
@@ -642,7 +789,7 @@ public class VoxelEngine {
 
             PointerBuffer glfwExtensions = glfwGetRequiredInstanceExtensions();
 
-            if (ENABLE_VALIDATION_LAYERS) {
+            if (ENABLE_VALIDATION_LAYERS && glfwExtensions != null) {
 
                 PointerBuffer extensions = stack.mallocPointer(glfwExtensions.capacity() + 1);
 
@@ -679,7 +826,7 @@ public class VoxelEngine {
     }
 
     public static void main(String[] args) {
-        new HelloTriangleApplication().run();
+        HelloTriangleApplication app = new HelloTriangleApplication();
+        app.run();
     }
-
 }

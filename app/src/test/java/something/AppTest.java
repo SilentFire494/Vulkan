@@ -12,5 +12,6 @@ import static org.junit.jupiter.api.Assertions.*;
 class AppTest {
     @Test void appHasAGreeting() {
         VoxelEngine classUnderTest = new VoxelEngine();
+        assertNotNull(classUnderTest, "app should have a greeting");
     }
 }
